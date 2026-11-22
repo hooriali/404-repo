@@ -304,11 +304,11 @@ class Bot:
                 need = True
             elif t - self.goal_t > 3.0:
                 for th in threats:
-                    if math.hypot(th[0] - gx, th[1] - gy) < 40.0:
+                    if math.hypot(th[0] - gx, th[1] - gy) < 90.0:
                         need = True
                         break
         if need:
-            g = self._pick_goal(ec, er, Rs, px, py, t)
+            g = self._pick_goal(ec, er, Rs, px, py, t, threats)
             if g is not None:
                 self.goal = g
                 self.goal_key = key
@@ -316,33 +316,55 @@ class Bot:
                 self.search = None
                 self.path = []
 
-    def _pick_goal(self, ec, er, Rs, px, py, t):
+    def _pick_goal(self, ec, er, Rs, px, py, t, threats):
         nav = self.nav
         best, bs = None, -1e9
         n = 0
         tries = 0
         rng = self.rng
-        known = [(kx, ky) for (kx, ky, kt) in self.known.values() if t - kt < 25.0]
-        while n < 140 and tries < 500:
+
+        known = [
+            (kx, ky)
+            for (kx, ky, kt) in self.known.values()
+            if t - kt < 25.0
+        ]
+
+        while n < 180 and tries < 700:
             tries += 1
             r = Rs * math.sqrt(rng.uniform(0.01, 1.0))
             a = rng.uniform(0.0, TAU)
             x = ec[0] + r * math.cos(a)
             y = ec[1] + r * math.sin(a)
+
             if not nav.nav_free(x, y) or nav.blocked(x, y):
                 continue
+
             n += 1
             enc = nav.enclosure(x, y)
             d = math.hypot(x - px, y - py)
-            s = 2.5 * enc - d / 150.0 - 0.7 * abs(r / Rs - 0.55)
+
+            s = 2.5 * enc - d / 180.0
+            s -= 0.7 * abs(r / max(Rs, 1.0) - 0.55)
+
             for kx, ky in known:
                 dd = math.hypot(x - kx, y - ky)
-                if dd < 90.0:
-                    s -= 1.5 * (1.0 - dd / 90.0)
+                if dd < 130.0:
+                    s -= 1.2 * (1.0 - dd / 130.0)
+
+            for th in threats:
+                ex = th[0] + th[2] * 2.0
+                ey = th[1] + th[3] * 2.0
+                dd = math.hypot(x - ex, y - ey)
+
+                if dd < 180.0:
+                    s -= 4.0 * th[4] * math.exp(-dd / 100.0)
+
             if s > bs:
                 bs, best = s, (x, y)
+
         if best is None:
             return (ec[0], ec[1])
+
         return best
 
     # ------------------------------------------------------------------ opportunities (loot when safe)
@@ -565,8 +587,8 @@ class Bot:
                 s += goal_w * (ux * gx + uy * gy)
             qx, qy = px + ux * walk * H, py + uy * walk * H
             for th in threats:
-                ex, ey = th[0] + th[2] * 0.5, th[1] + th[3] * 0.5
-                s -= 5.0 * th[4] * fth(math.hypot(qx - ex, qy - ey))
+                ex, ey = th[0] + th[2] * 1.0, th[1] + th[3] * 1.0
+                s -= 8.0 * th[4] * fth(math.hypot(qx - ex, qy - ey))
             if evasive:
                 for th in cover_enemies:
                     if not nav.sight_clear(qx, qy, th[0], th[1]):
