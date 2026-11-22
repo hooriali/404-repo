@@ -475,62 +475,119 @@ class Bot:
         return wp
 
     # ------------------------------------------------------------------ dodging
+    
     def _incoming(self, obs, me, enemies, px, py, pz, t):
-        """Returns [(nx, ny, urgency)] lateral dodge directions for bullets, shells and charging lasers."""
+        """Predict projectile paths relative to our moving mech."""
         out = []
-        cz = pz + 4.5
+
+        mv = me.get("vel") or [0.0, 0.0, 0.0]
+        mvx, mvy = mv[0], mv[1]
+
         for pr in obs.get("projectiles", []):
             x, y, z = pr["pos"]
             vx, vy, vz = pr["vel"]
             kind = pr.get("kind")
+
+            # Mortar: predict the shell's landing relative to
+            # where our mech will be at that time.
             if kind == "mortar":
-                g = self.cfg.get("weapons", {}).get("mortar", {}).get("gravity", 22.0)
-                # time until the shell is back at about our height
+                g = self.cfg.get("weapons", {}).get(
+                    "mortar", {}
+                ).get("gravity", 22.0)
+
                 a, b, c = -0.5 * g, vz, z - pz
                 disc = b * b - 4 * a * c
+
                 if disc < 0:
                     continue
+
                 tt = (-b - math.sqrt(disc)) / (2 * a)
                 if tt < 0:
                     tt = (-b + math.sqrt(disc)) / (2 * a)
+
                 if tt < 0 or tt > 2.5:
                     continue
+
                 ix, iy = x + vx * tt, y + vy * tt
-                dd = math.hypot(ix - px, iy - py)
+                px_future = px + mvx * tt
+                py_future = py + mvy * tt
+
+                dd = math.hypot(
+                    ix - px_future,
+                    iy - py_future
+                )
+
                 if dd < 14.0:
-                    ax, ay = px - ix, py - iy
+                    ax = px_future - ix
+                    ay = py_future - iy
                     n = math.hypot(ax, ay) or 1.0
-                    out.append((ax / n, ay / n, 1.5 * (1.0 - dd / 14.0) + 0.3))
+                    out.append((
+                        ax / n,
+                        ay / n,
+                        1.5 * (1.0 - dd / 14.0) + 0.3
+                    ))
                 continue
-            sp2 = vx * vx + vy * vy
+
+            # Other projectiles: calculate relative velocity.
+            rvx = vx - mvx
+            rvy = vy - mvy
+            sp2 = rvx * rvx + rvy * rvy
+
             if sp2 < 1.0:
                 continue
+
             rx, ry = x - px, y - py
-            tt = -(rx * vx + ry * vy) / sp2
+            tt = -(rx * rvx + ry * rvy) / sp2
+
             if tt < 0 or tt > 0.8:
                 continue
-            cx, cy = rx + vx * tt, ry + vy * tt
+
+            cx = rx + rvx * tt
+            cy = ry + rvy * tt
             cd = math.hypot(cx, cy)
+
             if cd > 5.5:
                 continue
+
             sp = math.sqrt(sp2)
-            nx, ny = -vy / sp, vx / sp
+            nx, ny = -rvy / sp, rvx / sp
+
             side = nx * cx + ny * cy
             if abs(side) < 0.3:
                 side = self.rng.choice((-1.0, 1.0))
+
             sgn = -1.0 if side > 0 else 1.0
-            out.append((nx * sgn, ny * sgn, 0.9 * (1.0 - tt / 0.8) + 0.2))
+
+            out.append((
+                nx * sgn,
+                ny * sgn,
+                0.9 * (1.0 - tt / 0.8) + 0.2
+            ))
+
+        # Dodge enemies charging their lasers.
         for e in enemies:
             if e.get("charging"):
                 ex, ey, _ = e["pos"]
                 d = math.hypot(px - ex, py - ey)
+
                 if d < 290 and d > 1:
-                    yaw_to_me = math.atan2(py - ey, px - ex)
-                    if abs(angdiff(e["aim"][0], yaw_to_me)) < math.asin(min(1.0, 4.0 / d)) + 0.1:
-                        nx, ny = -math.sin(yaw_to_me), math.cos(yaw_to_me)
-                        rel = (px - ex) * (-ny) + (py - ey) * nx
-                        out.append((nx, ny, 2.0) if self.strafe_sign > 0 else (-nx, -ny, 2.0))
+                    yaw_to_me = math.atan2(
+                        py - ey, px - ex
+                    )
+
+                    if abs(angdiff(
+                        e["aim"][0], yaw_to_me
+                    )) < math.asin(min(1.0, 4.0 / d)) + 0.1:
+                        nx = -math.sin(yaw_to_me)
+                        ny = math.cos(yaw_to_me)
+
+                        if self.strafe_sign > 0:
+                            out.append((nx, ny, 2.0))
+                        else:
+                            out.append((-nx, -ny, 2.0))
+
         return out
+
 
     # ------------------------------------------------------------------ steering
     def _steer(self, me, px, py, wp, tgt, threats, L, recent_dmg, dodge, ec, Rs, in_zone, t, calm):
