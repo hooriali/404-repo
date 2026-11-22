@@ -304,11 +304,11 @@ class Bot:
                 need = True
             elif t - self.goal_t > 3.0:
                 for th in threats:
-                    if math.hypot(th[0] - gx, th[1] - gy) < 40.0:
+                    if math.hypot(th[0] - gx, th[1] - gy) < 90.0:
                         need = True
                         break
         if need:
-            g = self._pick_goal(ec, er, Rs, px, py, t)
+            g = self._pick_goal(ec, er, Rs, px, py, t, threats)
             if g is not None:
                 self.goal = g
                 self.goal_key = key
@@ -316,33 +316,55 @@ class Bot:
                 self.search = None
                 self.path = []
 
-    def _pick_goal(self, ec, er, Rs, px, py, t):
+    def _pick_goal(self, ec, er, Rs, px, py, t, threats):
         nav = self.nav
         best, bs = None, -1e9
         n = 0
         tries = 0
         rng = self.rng
-        known = [(kx, ky) for (kx, ky, kt) in self.known.values() if t - kt < 25.0]
-        while n < 140 and tries < 500:
+
+        known = [
+            (kx, ky)
+            for (kx, ky, kt) in self.known.values()
+            if t - kt < 25.0
+        ]
+
+        while n < 180 and tries < 700:
             tries += 1
             r = Rs * math.sqrt(rng.uniform(0.01, 1.0))
             a = rng.uniform(0.0, TAU)
             x = ec[0] + r * math.cos(a)
             y = ec[1] + r * math.sin(a)
+
             if not nav.nav_free(x, y) or nav.blocked(x, y):
                 continue
+
             n += 1
             enc = nav.enclosure(x, y)
             d = math.hypot(x - px, y - py)
-            s = 2.5 * enc - d / 150.0 - 0.7 * abs(r / Rs - 0.55)
+
+            s = 2.5 * enc - d / 180.0
+            s -= 0.7 * abs(r / max(Rs, 1.0) - 0.55)
+
             for kx, ky in known:
                 dd = math.hypot(x - kx, y - ky)
-                if dd < 90.0:
-                    s -= 1.5 * (1.0 - dd / 90.0)
+                if dd < 130.0:
+                    s -= 1.2 * (1.0 - dd / 130.0)
+
+            for th in threats:
+                ex = th[0] + th[2] * 2.0
+                ey = th[1] + th[3] * 2.0
+                dd = math.hypot(x - ex, y - ey)
+
+                if dd < 180.0:
+                    s -= 4.0 * th[4] * math.exp(-dd / 100.0)
+
             if s > bs:
                 bs, best = s, (x, y)
+
         if best is None:
             return (ec[0], ec[1])
+
         return best
 
     # ------------------------------------------------------------------ opportunities (loot when safe)
@@ -453,119 +475,62 @@ class Bot:
         return wp
 
     # ------------------------------------------------------------------ dodging
-
     def _incoming(self, obs, me, enemies, px, py, pz, t):
-        """Predict projectile paths relative to our moving mech."""
+        """Returns [(nx, ny, urgency)] lateral dodge directions for bullets, shells and charging lasers."""
         out = []
-
-        mv = me.get("vel") or [0.0, 0.0, 0.0]
-        mvx, mvy = mv[0], mv[1]
-
+        cz = pz + 4.5
         for pr in obs.get("projectiles", []):
             x, y, z = pr["pos"]
             vx, vy, vz = pr["vel"]
             kind = pr.get("kind")
-
-            # Mortar: predict the shell's landing relative to
-            # where our mech will be at that time.
             if kind == "mortar":
-                g = self.cfg.get("weapons", {}).get(
-                    "mortar", {}
-                ).get("gravity", 22.0)
-
+                g = self.cfg.get("weapons", {}).get("mortar", {}).get("gravity", 22.0)
+                # time until the shell is back at about our height
                 a, b, c = -0.5 * g, vz, z - pz
                 disc = b * b - 4 * a * c
-
                 if disc < 0:
                     continue
-
                 tt = (-b - math.sqrt(disc)) / (2 * a)
                 if tt < 0:
                     tt = (-b + math.sqrt(disc)) / (2 * a)
-
                 if tt < 0 or tt > 2.5:
                     continue
-
                 ix, iy = x + vx * tt, y + vy * tt
-                px_future = px + mvx * tt
-                py_future = py + mvy * tt
-
-                dd = math.hypot(
-                    ix - px_future,
-                    iy - py_future
-                )
-
+                dd = math.hypot(ix - px, iy - py)
                 if dd < 14.0:
-                    ax = px_future - ix
-                    ay = py_future - iy
+                    ax, ay = px - ix, py - iy
                     n = math.hypot(ax, ay) or 1.0
-                    out.append((
-                        ax / n,
-                        ay / n,
-                        1.5 * (1.0 - dd / 14.0) + 0.3
-                    ))
+                    out.append((ax / n, ay / n, 1.5 * (1.0 - dd / 14.0) + 0.3))
                 continue
-
-            # Other projectiles: calculate relative velocity.
-            rvx = vx - mvx
-            rvy = vy - mvy
-            sp2 = rvx * rvx + rvy * rvy
-
+            sp2 = vx * vx + vy * vy
             if sp2 < 1.0:
                 continue
-
             rx, ry = x - px, y - py
-            tt = -(rx * rvx + ry * rvy) / sp2
-
+            tt = -(rx * vx + ry * vy) / sp2
             if tt < 0 or tt > 0.8:
                 continue
-
-            cx = rx + rvx * tt
-            cy = ry + rvy * tt
+            cx, cy = rx + vx * tt, ry + vy * tt
             cd = math.hypot(cx, cy)
-
             if cd > 5.5:
                 continue
-
             sp = math.sqrt(sp2)
-            nx, ny = -rvy / sp, rvx / sp
-
+            nx, ny = -vy / sp, vx / sp
             side = nx * cx + ny * cy
             if abs(side) < 0.3:
                 side = self.rng.choice((-1.0, 1.0))
-
             sgn = -1.0 if side > 0 else 1.0
-
-            out.append((
-                nx * sgn,
-                ny * sgn,
-                0.9 * (1.0 - tt / 0.8) + 0.2
-            ))
-
-        # Dodge enemies charging their lasers.
+            out.append((nx * sgn, ny * sgn, 0.9 * (1.0 - tt / 0.8) + 0.2))
         for e in enemies:
             if e.get("charging"):
                 ex, ey, _ = e["pos"]
                 d = math.hypot(px - ex, py - ey)
-
                 if d < 290 and d > 1:
-                    yaw_to_me = math.atan2(
-                        py - ey, px - ex
-                    )
-
-                    if abs(angdiff(
-                        e["aim"][0], yaw_to_me
-                    )) < math.asin(min(1.0, 4.0 / d)) + 0.1:
-                        nx = -math.sin(yaw_to_me)
-                        ny = math.cos(yaw_to_me)
-
-                        if self.strafe_sign > 0:
-                            out.append((nx, ny, 2.0))
-                        else:
-                            out.append((-nx, -ny, 2.0))
-
+                    yaw_to_me = math.atan2(py - ey, px - ex)
+                    if abs(angdiff(e["aim"][0], yaw_to_me)) < math.asin(min(1.0, 4.0 / d)) + 0.1:
+                        nx, ny = -math.sin(yaw_to_me), math.cos(yaw_to_me)
+                        rel = (px - ex) * (-ny) + (py - ey) * nx
+                        out.append((nx, ny, 2.0) if self.strafe_sign > 0 else (-nx, -ny, 2.0))
         return out
-
 
     # ------------------------------------------------------------------ steering
     def _steer(self, me, px, py, wp, tgt, threats, L, recent_dmg, dodge, ec, Rs, in_zone, t, calm):
@@ -622,8 +587,8 @@ class Bot:
                 s += goal_w * (ux * gx + uy * gy)
             qx, qy = px + ux * walk * H, py + uy * walk * H
             for th in threats:
-                ex, ey = th[0] + th[2] * 0.5, th[1] + th[3] * 0.5
-                s -= 5.0 * th[4] * fth(math.hypot(qx - ex, qy - ey))
+                ex, ey = th[0] + th[2] * 1.0, th[1] + th[3] * 1.0
+                s -= 8.0 * th[4] * fth(math.hypot(qx - ex, qy - ey))
             if evasive:
                 for th in cover_enemies:
                     if not nav.sight_clear(qx, qy, th[0], th[1]):
@@ -663,29 +628,41 @@ class Bot:
         yaw_now = me["aim"][0]
         alive = obs.get("alive", 16)
 
-        # pick a target: nearest enemy with a clear line
+        # Pick a visible, vulnerable enemy rather than blindly
+        # choosing the nearest enemy.
         target = None
         td = 1e9
+        best_target_score = 1e18
+
         for e in enemies:
             ex, ey, ez = e["pos"]
             d = math.hypot(ex - px, ey - py)
-            if d < td and nav.sight_clear(px, py, ex, ey):
-                target, td = e, d
-        nearest = None
-        nd = 1e9
-        for e in enemies:
-            d = math.hypot(e["pos"][0] - px, e["pos"][1] - py)
-            if d < nd:
-                nearest, nd = e, d
 
-        aim = None
-        engage = False
+            if d > 260.0:
+                continue
+
+            if not nav.sight_clear(px, py, ex, ey):
+                continue
+
+            mh = float(e.get("max_hp") or 1400.0)
+            hp = e.get("hp")
+
+            hp_ratio = 1.0
+            if hp is not None:
+                hp_ratio = max(0.0, min(1.0, float(hp) / mh))
+
+            score = d * (0.55 + 0.45 * hp_ratio)
+
+            if score < best_target_score:
+                best_target_score = score
+                target = e
+                td = d
         if target is not None:
             ex, ey, ez = target["pos"]
             aims_at_me = False
             if "aim" in target and td > 1:
                 aims_at_me = abs(angdiff(target["aim"][0], math.atan2(py - ey, px - ex))) < 0.25 and td < 200
-            engage = hit_recent or td < 140 or alive <= 3 or aims_at_me
+            engage = hit_recent or td < 200 or alive <= 3 or aims_at_me
             n_close = sum(1 for th in threats if th[6] < 60)
             tv = target.get("vel") or [0, 0, 0]
             cz = ez + 4.5
