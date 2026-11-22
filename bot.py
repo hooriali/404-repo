@@ -206,8 +206,6 @@ class Bot:
             self.hist.pop(0)
 
         holding = False
-        if tgt is not None and tgt[2] in ("hide",) and calm and math.hypot(tgt[0] - px, tgt[1] - py) < 5.0:
-            holding = True
         if tgt is not None and tgt[2] == "crate" and tgt[3] and tgt[3].get("shoot"):
             holding = True
         if tgt is not None and tgt[2] == "drop" and math.hypot(tgt[0] - px, tgt[1] - py) < 3.0:
@@ -630,11 +628,10 @@ class Bot:
             aims_at_me = False
             if "aim" in target and td > 1:
                 aims_at_me = abs(angdiff(target["aim"][0], math.atan2(py - ey, px - ex))) < 0.25 and td < 200
-            engage = hit_recent or td < 70 or alive <= 3 or aims_at_me
+            engage = hit_recent or td < 140 or alive <= 3 or aims_at_me
             n_close = sum(1 for th in threats if th[6] < 60)
             tv = target.get("vel") or [0, 0, 0]
-            sc = 1.0 + 0.05 * (target.get("cubes") or 0)
-            cz = ez + 4.5 * sc
+            cz = ez + 4.5
             laser = slots.get("laser")
             lightning = slots.get("lightning")
             mortar = slots.get("mortar")
